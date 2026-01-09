@@ -4,68 +4,15 @@
  * If a unit has multiple base sizes (e.g. chars), we primarily list the most common one.
  * We can expand this structure to include oval sizes e.g. "60x35mm".
  */
-export const baseSizes = {
-    // Space Marines
-    "Intercessors": "32mm",
-    "Intercessor Squad": "32mm",
-    "Assault Intercessors": "32mm",
-    "Assault Intercessor Squad": "32mm",
-    "Hellblasters": "32mm",
-    "Hellblaster Squad": "32mm",
-    "Inceptors": "40mm",
-    "Inceptor Squad": "40mm",
-    "Terminators": "40mm",
-    "Terminator Squad": "40mm",
-    "Bladeguard Veterans": "40mm",
-    "Bladeguard Veteran Squad": "40mm",
-    "Captain": "40mm",
-    "Lieutenant": "40mm",
-    "Redemptor Dreadnought": "90mm",
+import baseSizesData from './baseSizes.json';
 
-    // Tyranids
-    "Termagants": "25mm",
-    "Termagant": "25mm",
-    "Hormagaunts": "25mm",
-    "Hormagaunt": "25mm",
-    "Genestealers": "25mm",
-    "Genestealer": "25mm",
-    "Tyranid Warriors": "50mm",
-    "Tyranid Warrior": "50mm",
-    "Hive Tyrant": "60mm",
-    "Winged Hive Tyrant": "60mm",
-    "Exocrine": "120x92mm", // Oval
-
-    // Necrons
-    "Necron Warriors": "32mm",
-    "Necron Warrior": "32mm",
-    "Immortals": "32mm",
-    "Skorpekh Destroyers": "50mm",
-    "Overlord": "40mm",
-    "Monolith": "160mm", // No base usually, but huge
-
-    // Imperial Knights
-    "Knight Castellan": "170x105mm", // Oval
-    "Knight Paladin": "170x105mm",
-    "Armiger Helverin": "100mm",
-    "Armiger Warglaive": "100mm",
-
-    // AdMech
-    "Tech-Priest Dominus": "50mm",
-    "Tech-Priest Manipulus": "50mm",
-    "Skitarii Rangers": "25mm",
-    "Skitarii Vanguard": "25mm",
-
-    // Agents
-    "Callidus Assassin": "32mm",
-
-    // Grey Knights
-    "Grey Knights Terminator Squad": "40mm",
-
-    // Generic / Default
-    "Infantry": "32mm",
-    "Character": "40mm",
-    "Vehicle": "None",
-};
+/**
+ * Map of Unit Name -> Base Size definition.
+ * Sizes are in mm.
+ * If a unit has multiple base sizes (e.g. chars), we primarily list the most common one.
+ * We can expand this structure to include oval sizes e.g. "60x35mm".
+ */
+export const baseSizes = baseSizesData;
 
 /**
  * Common standard base sizes for the dropdown
@@ -90,10 +37,32 @@ export const commonBaseSizes = [
     "170x105mm"
 ];
 
+// Helper to get custom sizes from storage
+function getCustomBaseSizes() {
+    try {
+        const stored = localStorage.getItem('tokenGen_customBaseSizes');
+        return stored ? JSON.parse(stored) : {};
+    } catch (e) {
+        console.warn('Failed to parse (or read) custom base sizes', e);
+        return {};
+    }
+}
+
 /**
  * Normalizes unit name to try and find a match.
+ * Priority:
+ * 1. Custom User Saved Size (LocalStorage)
+ * 2. Static Database (JSON)
+ * 3. Heuristics
  */
 export function getBaseSize(unitName) {
+    if (!unitName) return null;
+
+    // 1. Check Custom Storage
+    const customSizes = getCustomBaseSizes();
+    if (customSizes[unitName]) return customSizes[unitName];
+
+    // 2. Check Static Database
     // Direct match
     if (baseSizes[unitName]) return baseSizes[unitName];
 
@@ -102,12 +71,32 @@ export function getBaseSize(unitName) {
         return baseSizes[unitName.slice(0, -1)];
     }
 
-    // Case insensitive check
+    // Case insensitive check for Static Database
     const lower = unitName.toLowerCase();
     for (const key in baseSizes) {
         if (key.toLowerCase() === lower) return baseSizes[key];
     }
 
+    // Case insensitive check for Custom Storage
+    for (const key in customSizes) {
+        if (key.toLowerCase() === lower) return customSizes[key];
+    }
+
     // Partial match heuristic?
     return null;
+}
+
+/**
+ * Saves a user-defined base size for a unit name.
+ */
+export function saveBaseSize(unitName, size) {
+    if (!unitName || !size) return;
+    try {
+        const customSizes = getCustomBaseSizes();
+        customSizes[unitName] = size;
+        localStorage.setItem('tokenGen_customBaseSizes', JSON.stringify(customSizes));
+        console.log(`Saved custom size for ${unitName}: ${size}`);
+    } catch (e) {
+        console.error('Failed to save custom base size', e);
+    }
 }

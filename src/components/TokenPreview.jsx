@@ -3,7 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Text3D, Center } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
-import { commonBaseSizes } from '../utils/baseSizes';
+import { commonBaseSizes, saveBaseSize } from '../utils/baseSizes';
 
 // Helper component to center text geometry robustly and efficiently
 export function CenteredText3D({ children, ...props }) {
@@ -29,21 +29,26 @@ export function CenteredText3D({ children, ...props }) {
     );
 }
 
-export function TokenModel({ unit, exportRef, baseColor, textColor, tokenHeight, textHeight }) {
+export function TokenModel({ unit, exportRef, baseColor, textColor, tokenHeight, textHeight, hasBevel, hasRing }) {
     const textGroupRef = useRef();
     const wrapperRef = useRef();
 
     // Parse size from settings or unit
-    const { width, depth } = useMemo(() => {
+    const { width, depth, isRect } = useMemo(() => {
         // Use unit's baseSize (which is updated by parent)
         const sizeStr = unit?.baseSize || '32mm';
+
+        let w = 32;
+        let d = 32;
+        let rect = sizeStr.toLowerCase().includes('rect');
+
         const match = sizeStr.match(/(\d+)(?:x(\d+))?/);
         if (match) {
-            const w = parseInt(match[1]);
-            const d = match[2] ? parseInt(match[2]) : w;
-            return { width: w, depth: d };
+            w = parseInt(match[1]);
+            d = match[2] ? parseInt(match[2]) : w;
         }
-        return { width: 32, depth: 32 };
+
+        return { width: w, depth: d, isRect: rect };
     }, [unit?.baseSize]);
 
     const radius = width / 2;
@@ -95,28 +100,45 @@ export function TokenModel({ unit, exportRef, baseColor, textColor, tokenHeight,
         }
     }, [words, width, depth, unit?.scaleAdjustment]);
 
+    // Bevel logic: 75 degree angle
+    // tan(theta) = height / (bottom - top) => (bottom - top) = height / tan(theta)
+    const angleRad = 75 * (Math.PI / 180);
+    const bevelInset = cylinderHeight / Math.tan(angleRad);
+    const topRadius = hasBevel ? Math.max(0.1, radius - bevelInset) : radius;
+
     return (
         <group ref={exportRef}>
             {/* The Base */}
-            <mesh position={[0, cylinderHeight / 2, 0]} scale={[1, 1, depth / width]}>
-                <cylinderGeometry args={[radius, radius, cylinderHeight, 64]} />
-                <meshStandardMaterial color={baseColor || "#333333"} />
-            </mesh>
+            {isRect ? (
+                <mesh position={[0, cylinderHeight / 2, 0]}>
+                    <boxGeometry args={[width, cylinderHeight, depth]} />
+                    <meshStandardMaterial color={baseColor || "#333333"} />
+                </mesh>
+            ) : (
+                <>
+                    <mesh position={[0, cylinderHeight / 2, 0]} scale={[1, 1, depth / width]}>
+                        {/* Cylinder args: radiusTop, radiusBottom, height, segments */}
+                        <cylinderGeometry args={[topRadius, radius, cylinderHeight, 64]} />
+                        <meshStandardMaterial color={baseColor || "#333333"} />
+                    </mesh>
+
+                    {/* The Optional Ring */}
+                    {hasRing && (
+                        <mesh position={[0, cylinderHeight, 0]} rotation={[Math.PI / 2, 0, 0]} scale={[1, depth / width, 1]}>
+                            {/* Torus args: radius, tube, radialSegments, tubularSegments */}
+                            {/* Radius should be close to top edge. Tube thickness e.g. 1mm? */}
+                            <torusGeometry args={[topRadius - 1, 1, 16, 64]} />
+                            <meshStandardMaterial color={textColor || "#ffd700"} />
+                        </mesh>
+                    )}
+                </>
+            )}
 
             {/* The Text Group Wrapper */}
-            {/* This mesh handles the orientation (flat on base) and scale */}
-            {/* We use wrapperRef to imperatively update scale without re-renders */}
-            {/* Sink text slightly into base (0.2mm) to prevent Z-fighting and ensure solid STL export */}
-            {/* The Text Group Wrapper */}
-            {/* This mesh handles the orientation (flat on base) and scale */}
-            {/* We use wrapperRef to imperatively update scale without re-renders */}
-            {/* Sink text slightly into base (0.2mm) to prevent Z-fighting and ensure solid STL export */}
             <group ref={wrapperRef} position={[0, cylinderHeight - 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
                 <group ref={textGroupRef}>
                     {words.map((word, i) => {
                         // Calculate vertical offset to center the block of text
-                        // (words.length - 1) * lineheight is the total span from top line center to bottom line center
-                        // We want to center this around 0.
                         const yOffset = ((words.length - 1) / 2 - i) * lineHeight;
 
                         return (
@@ -154,16 +176,19 @@ export default function TokenPreview({
 }) {
     const exportRef = useRef();
     const [isCustom, setIsCustom] = useState(false);
-    // Local state moved to App.jsx
+
+    // UI state for visual options
+    const [hasBevel, setHasBevel] = useState(false);
+    const [hasRing, setHasRing] = useState(false);
 
     const handleDownload = () => {
         if (!exportRef.current) return;
 
         try {
-            // Clone the group to perform sanitation without affecting the live view
+            // Clone the group to perform sanitation
             const sceneClone = exportRef.current.clone(true);
 
-            // Validate meshes to prevent STLExporter crash
+            // Validate meshes
             const badMeshes = [];
             sceneClone.traverse((child) => {
                 if (child.isMesh) {
@@ -174,7 +199,6 @@ export default function TokenPreview({
                 }
             });
 
-            // Remove bad meshes from the clone
             badMeshes.forEach(child => {
                 if (child.parent) child.parent.remove(child);
             });
@@ -200,6 +224,8 @@ export default function TokenPreview({
             setIsCustom(false);
             if (onUpdate && unit) {
                 onUpdate(unit.id, { baseSize: val });
+                // Save this preference!
+                saveBaseSize(unit.name, val);
             }
         }
     };
@@ -207,7 +233,6 @@ export default function TokenPreview({
     const handleScaleAdjust = (delta) => {
         if (onUpdate && unit) {
             const current = unit.scaleAdjustment || 1.0;
-            // Round to 1 decimal to avoid float weirdness
             const next = Math.round((current + delta) * 10) / 10;
             if (next > 0.1) {
                 onUpdate(unit.id, { scaleAdjustment: next });
@@ -215,20 +240,60 @@ export default function TokenPreview({
         }
     };
 
+    // Check current shape state based on baseSize string
+    const currentShape = useMemo(() => {
+        if (!unit?.baseSize) return 'Circle';
+        if (unit.baseSize.toLowerCase().includes('rect')) return 'Rect';
+        // Check for oval (e.g. 75x42mm and not equal dimensions)
+        const match = unit.baseSize.match(/(\d+)(?:x(\d+))?/);
+        if (match && match[2] && match[1] !== match[2]) return 'Oval';
+        return 'Circle';
+    }, [unit?.baseSize]);
+
+    // Helper to update shape while preserving dimensions (roughly)
+    const handleShapeChange = (newShape) => {
+        if (!unit) return;
+
+        // Parse current dims
+        let w = 32, d = 32;
+        const match = unit.baseSize.match(/(\d+)(?:x(\d+))?/);
+        if (match) {
+            w = parseInt(match[1]);
+            d = match[2] ? parseInt(match[2]) : w;
+        }
+
+        let newSize = "";
+        if (newShape === 'Circle') {
+            // Force square dims, take largest? or Width
+            newSize = `${w}mm`;
+        } else if (newShape === 'Oval') {
+            // If already different keep them, else make one larger? 
+            // Just keep as is, but without 'Rect' suffix. If w=d, technically circle but oval format allowed "32x32mm"
+            newSize = `${w}x${d}mm`;
+        } else if (newShape === 'Rect') {
+            newSize = `${w}x${d}mm Rect`;
+        }
+
+        if (onUpdate) onUpdate(unit.id, { baseSize: newSize });
+    };
+
     const handleCustomSubmit = (e) => {
         e.preventDefault();
         const formData = new FormData(e.target);
         const w = formData.get('width');
         const d = formData.get('depth');
-        const isOval = formData.get('isOval');
 
         let newSize = `${w}mm`;
-        if (isOval || w !== d) {
+        if (currentShape === 'Rect') {
+            newSize = `${w}x${d}mm Rect`;
+        } else if (currentShape === 'Oval' || w !== d) {
             newSize = `${w}x${d}mm`;
         }
 
         if (onUpdate && unit) {
             onUpdate(unit.id, { baseSize: newSize });
+            // Save preference, even if it's a weird custom size
+            saveBaseSize(unit.name, newSize);
         }
     };
 
@@ -259,72 +324,100 @@ export default function TokenPreview({
                     </select>
                 </div>
 
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '0.5rem' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Shape</label>
+                    <select
+                        className="btn"
+                        style={{ background: 'var(--bg-tertiary)', border: '1px solid var(--border-color)', color: 'white' }}
+                        value={currentShape}
+                        onChange={(e) => handleShapeChange(e.target.value)}
+                    >
+                        <option value="Circle">Circle</option>
+                        <option value="Oval">Oval</option>
+                        <option value="Rect">Rect</option>
+                    </select>
+                </div>
+
                 {isCustom && (
                     <form onSubmit={handleCustomSubmit} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Width (mm)</label>
-                            <input name="width" type="number" defaultValue={32} style={{ padding: '0.4rem', borderRadius: '4px', width: '60px' }} />
+                            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>W</label>
+                            <input name="width" type="number" defaultValue={32} style={{ padding: '0.4rem', borderRadius: '4px', width: '40px' }} />
                         </div>
                         <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Depth (mm)</label>
-                            <input name="depth" type="number" defaultValue={32} style={{ padding: '0.4rem', borderRadius: '4px', width: '60px' }} />
+                            <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>D</label>
+                            <input name="depth" type="number" defaultValue={32} style={{ padding: '0.4rem', borderRadius: '4px', width: '40px' }} />
                         </div>
                         <button type="submit" className="btn" style={{ fontSize: '0.8rem' }}>Set</button>
                     </form>
                 )}
 
                 <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
-                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Text Scale</label>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Options</label>
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', height: '100%' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '0.8rem', color: 'white' }}>
+                            <input type="checkbox" checked={hasBevel} onChange={e => setHasBevel(e.target.checked)} />
+                            Bevel
+                        </label>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '0.8rem', color: 'white' }}>
+                            <input type="checkbox" checked={hasRing} onChange={e => setHasRing(e.target.checked)} />
+                            Ring
+                        </label>
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Scale</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0px' }}>
+                        <button className="btn" style={{ padding: '0.2rem 0.5rem' }} onClick={() => handleScaleAdjust(-0.1)}>-</button>
+                        <span style={{ fontSize: '0.8rem', minWidth: '30px', textAlign: 'center' }}>{(unit.scaleAdjustment || 1.0).toFixed(1)}x</span>
+                        <button className="btn" style={{ padding: '0.2rem 0.5rem' }} onClick={() => handleScaleAdjust(0.1)}>+</button>
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Height (Base/Text)</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
-                        <button className="btn" style={{ padding: '0.2rem 0.6rem' }} onClick={() => handleScaleAdjust(-0.1)}>-</button>
-                        <span style={{ minWidth: '30px', textAlign: 'center' }}>{(unit.scaleAdjustment || 1.0).toFixed(1)}x</span>
-                        <button className="btn" style={{ padding: '0.2rem 0.6rem' }} onClick={() => handleScaleAdjust(0.1)}>+</button>
+                        <input
+                            type="number"
+                            min="1"
+                            max="20"
+                            step="0.5"
+                            value={tokenHeight || 3}
+                            onChange={(e) => setTokenHeight && setTokenHeight(parseFloat(e.target.value))}
+                            style={{ width: '45px', padding: '0.2rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: 'var(--bg-tertiary)', color: 'white' }}
+                            title="Token Base Height"
+                        />
+                        <input
+                            type="number"
+                            min="0.2"
+                            max="5"
+                            step="0.1"
+                            value={textHeight || 1}
+                            onChange={(e) => setTextHeight && setTextHeight(parseFloat(e.target.value))}
+                            style={{ width: '45px', padding: '0.2rem', borderRadius: '4px', border: '1px solid var(--border-color)', background: 'var(--bg-tertiary)', color: 'white' }}
+                            title="Text Extrusion Height"
+                        />
                     </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '0.5rem' }}>
                     <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Colors</label>
-                    <div style={{ display: 'flex', gap: '5px' }}>
+                    <div style={{ display: 'flex', gap: '2px' }}>
                         <input
                             type="color"
-                            value={baseColor}
-                            onChange={(e) => setBaseColor(e.target.value)}
+                            value={baseColor || '#333333'}
+                            onChange={(e) => setBaseColor && setBaseColor(e.target.value)}
                             title="Base Color"
-                            style={{ width: '30px', height: '30px', padding: 0, border: 'none', cursor: 'pointer', background: 'none' }}
+                            style={{ width: '24px', height: '24px', padding: 0, border: 'none', cursor: 'pointer', background: 'none' }}
                         />
                         <input
                             type="color"
-                            value={textColor}
-                            onChange={(e) => setTextColor(e.target.value)}
+                            value={textColor || '#ffd700'}
+                            onChange={(e) => setTextColor && setTextColor(e.target.value)}
                             title="Text Color"
-                            style={{ width: '30px', height: '30px', padding: 0, border: 'none', cursor: 'pointer', background: 'none' }}
+                            style={{ width: '24px', height: '24px', padding: 0, border: 'none', cursor: 'pointer', background: 'none' }}
                         />
-                    </div>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
-                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Heights (mm)</label>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <input
-                                title="Base Height"
-                                type="number"
-                                step="0.5"
-                                value={tokenHeight}
-                                onChange={(e) => setTokenHeight(parseFloat(e.target.value) || 0)}
-                                style={{ width: '50px', padding: '0.2rem', borderRadius: '4px' }}
-                            />
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column' }}>
-                            <input
-                                title="Text Height"
-                                type="number"
-                                step="0.1"
-                                value={textHeight}
-                                onChange={(e) => setTextHeight(parseFloat(e.target.value) || 0)}
-                                style={{ width: '50px', padding: '0.2rem', borderRadius: '4px' }}
-                            />
-                        </div>
                     </div>
                 </div>
 
@@ -332,7 +425,7 @@ export default function TokenPreview({
 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
                     <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', opacity: 0 }}>.</label>
-                    <button className="btn" onClick={handleDownload}>Download STL</button>
+                    <button className="btn" onClick={handleDownload}>STL</button>
                 </div>
             </div>
 
@@ -351,6 +444,8 @@ export default function TokenPreview({
                             textColor={textColor}
                             tokenHeight={tokenHeight}
                             textHeight={textHeight}
+                            hasBevel={hasBevel}
+                            hasRing={hasRing}
                         />
                     </Center>
 
