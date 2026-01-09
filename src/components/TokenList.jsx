@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function TokenList({ units, selectedId, onSelect }) {
+export default function TokenList({ units, selectedId, onSelect, action }) {
     if (!units || units.length === 0) {
         return (
             <div className="panel">
@@ -13,10 +13,13 @@ export default function TokenList({ units, selectedId, onSelect }) {
     return (
         <div className="panel">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <h2>Parsed Units</h2>
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    {units.length} unit{units.length !== 1 ? 's' : ''} found
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <h2 style={{ margin: 0 }}>Parsed Units</h2>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                        {units.length} unit{units.length !== 1 ? 's' : ''} found
+                    </span>
+                </div>
+                {action}
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '500px', overflowY: 'auto' }}>

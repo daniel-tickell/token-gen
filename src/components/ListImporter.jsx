@@ -19,7 +19,8 @@ export default function ListImporter({ onParse }) {
                     padding: '1rem',
                     borderRadius: '4px',
                     resize: 'vertical',
-                    fontFamily: 'monospace'
+                    fontFamily: 'monospace',
+                    boxSizing: 'border-box'
                 }}
             />
             <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end' }}>

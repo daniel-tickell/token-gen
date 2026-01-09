@@ -5,15 +5,21 @@ import * as THREE from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { commonBaseSizes } from '../utils/baseSizes';
 
-// Helper component to center text geometry robustly
-function CenteredText3D({ children, ...props }) {
+// Helper component to center text geometry robustly and efficiently
+export function CenteredText3D({ children, ...props }) {
     const meshRef = useRef();
 
     useLayoutEffect(() => {
         if (meshRef.current?.geometry) {
-            meshRef.current.geometry.center();
+            // Center ONLY on X axis to preserve baseline (Y) and extrusion origin (Z)
+            meshRef.current.geometry.computeBoundingBox();
+            const box = meshRef.current.geometry.boundingBox;
+            const xOffset = -0.5 * (box.max.x + box.min.x);
+            // Translate geometry only in X.
+            // We do NOT recenter Y (keeps baseline intact) or Z (keeps extrusion starting at 0)
+            meshRef.current.geometry.translate(xOffset, 0, 0);
         }
-    }, [children]); // Re-center when text changes
+    }, [children, props.height, props.size, props.font, props.bevelEnabled, props.bevelSize, props.bevelThickness]); // Re-center when text or geometry props change
 
     return (
         <Text3D ref={meshRef} {...props}>
@@ -23,7 +29,7 @@ function CenteredText3D({ children, ...props }) {
     );
 }
 
-function TokenModel({ unit, exportRef, baseColor, textColor }) {
+export function TokenModel({ unit, exportRef, baseColor, textColor, tokenHeight, textHeight }) {
     const textGroupRef = useRef();
     const wrapperRef = useRef();
 
@@ -41,7 +47,8 @@ function TokenModel({ unit, exportRef, baseColor, textColor }) {
     }, [unit?.baseSize]);
 
     const radius = width / 2;
-    const baseHeight = 3;
+    // baseHeight is now a prop, defaulting to 3 if not provided
+    const cylinderHeight = tokenHeight || 3;
 
     // Split words
     const words = useMemo(() => {
@@ -91,8 +98,8 @@ function TokenModel({ unit, exportRef, baseColor, textColor }) {
     return (
         <group ref={exportRef}>
             {/* The Base */}
-            <mesh position={[0, baseHeight / 2, 0]} scale={[1, 1, depth / width]}>
-                <cylinderGeometry args={[radius, radius, baseHeight, 64]} />
+            <mesh position={[0, cylinderHeight / 2, 0]} scale={[1, 1, depth / width]}>
+                <cylinderGeometry args={[radius, radius, cylinderHeight, 64]} />
                 <meshStandardMaterial color={baseColor || "#333333"} />
             </mesh>
 
@@ -100,7 +107,11 @@ function TokenModel({ unit, exportRef, baseColor, textColor }) {
             {/* This mesh handles the orientation (flat on base) and scale */}
             {/* We use wrapperRef to imperatively update scale without re-renders */}
             {/* Sink text slightly into base (0.2mm) to prevent Z-fighting and ensure solid STL export */}
-            <mesh ref={wrapperRef} position={[0, baseHeight - 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            {/* The Text Group Wrapper */}
+            {/* This mesh handles the orientation (flat on base) and scale */}
+            {/* We use wrapperRef to imperatively update scale without re-renders */}
+            {/* Sink text slightly into base (0.2mm) to prevent Z-fighting and ensure solid STL export */}
+            <group ref={wrapperRef} position={[0, cylinderHeight - 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
                 <group ref={textGroupRef}>
                     {words.map((word, i) => {
                         // Calculate vertical offset to center the block of text
@@ -113,7 +124,7 @@ function TokenModel({ unit, exportRef, baseColor, textColor }) {
                                 <CenteredText3D
                                     font="/fonts/helvetiker_regular.typeface.json"
                                     size={fontSize}
-                                    height={1}
+                                    height={textHeight || 1}
                                     curveSegments={32}
                                     bevelEnabled
                                     bevelThickness={0.1}
@@ -128,26 +139,57 @@ function TokenModel({ unit, exportRef, baseColor, textColor }) {
                         );
                     })}
                 </group>
-            </mesh>
+            </group>
         </group>
     );
 }
 
-export default function TokenPreview({ unit, onUpdate }) {
+export default function TokenPreview({
+    unit,
+    onUpdate,
+    baseColor, setBaseColor,
+    textColor, setTextColor,
+    tokenHeight, setTokenHeight,
+    textHeight, setTextHeight
+}) {
     const exportRef = useRef();
     const [isCustom, setIsCustom] = useState(false);
-    const [baseColor, setBaseColor] = useState('#e0e0e0');
-    const [textColor, setTextColor] = useState('#000000');
+    // Local state moved to App.jsx
 
     const handleDownload = () => {
         if (!exportRef.current) return;
-        const exporter = new STLExporter();
-        const result = exporter.parse(exportRef.current, { binary: true });
-        const blob = new Blob([result], { type: 'application/octet-stream' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = `${unit?.name || 'token'}_${unit?.baseSize || 'base'}.stl`;
-        link.click();
+
+        try {
+            // Clone the group to perform sanitation without affecting the live view
+            const sceneClone = exportRef.current.clone(true);
+
+            // Validate meshes to prevent STLExporter crash
+            const badMeshes = [];
+            sceneClone.traverse((child) => {
+                if (child.isMesh) {
+                    if (!child.geometry || !child.geometry.attributes || !child.geometry.attributes.position) {
+                        console.warn("Invalid geometry found on", child);
+                        badMeshes.push(child);
+                    }
+                }
+            });
+
+            // Remove bad meshes from the clone
+            badMeshes.forEach(child => {
+                if (child.parent) child.parent.remove(child);
+            });
+
+            const exporter = new STLExporter();
+            const result = exporter.parse(sceneClone, { binary: true });
+            const blob = new Blob([result], { type: 'application/octet-stream' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = `${unit?.name || 'token'}_${unit?.baseSize || 'base'}.stl`;
+            link.click();
+        } catch (err) {
+            console.error("Export failed", err);
+            alert("Failed to generate STL: " + err.message);
+        }
     };
 
     const handleSizeChange = (e) => {
@@ -260,6 +302,32 @@ export default function TokenPreview({ unit, onUpdate }) {
                     </div>
                 </div>
 
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Heights (mm)</label>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <input
+                                title="Base Height"
+                                type="number"
+                                step="0.5"
+                                value={tokenHeight}
+                                onChange={(e) => setTokenHeight(parseFloat(e.target.value) || 0)}
+                                style={{ width: '50px', padding: '0.2rem', borderRadius: '4px' }}
+                            />
+                        </div>
+                        <div style={{ display: 'flex', flexDirection: 'column' }}>
+                            <input
+                                title="Text Height"
+                                type="number"
+                                step="0.1"
+                                value={textHeight}
+                                onChange={(e) => setTextHeight(parseFloat(e.target.value) || 0)}
+                                style={{ width: '50px', padding: '0.2rem', borderRadius: '4px' }}
+                            />
+                        </div>
+                    </div>
+                </div>
+
                 <div style={{ flex: 1 }}></div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -281,6 +349,8 @@ export default function TokenPreview({ unit, onUpdate }) {
                             exportRef={exportRef}
                             baseColor={baseColor}
                             textColor={textColor}
+                            tokenHeight={tokenHeight}
+                            textHeight={textHeight}
                         />
                     </Center>
 
