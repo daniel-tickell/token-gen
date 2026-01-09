@@ -5,9 +5,27 @@ import * as THREE from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { commonBaseSizes } from '../utils/baseSizes';
 
-function TokenModel({ unit, exportRef }) {
+// Helper component to center text geometry robustly
+function CenteredText3D({ children, ...props }) {
+    const meshRef = useRef();
+
+    useLayoutEffect(() => {
+        if (meshRef.current?.geometry) {
+            meshRef.current.geometry.center();
+        }
+    }, [children]); // Re-center when text changes
+
+    return (
+        <Text3D ref={meshRef} {...props}>
+            {children}
+            <meshStandardMaterial color={props.materialColor || "#ffd700"} />
+        </Text3D>
+    );
+}
+
+function TokenModel({ unit, exportRef, baseColor, textColor }) {
     const textGroupRef = useRef();
-    const [textScale, setTextScale] = useState(1);
+    const wrapperRef = useRef();
 
     // Parse size from settings or unit
     const { width, depth } = useMemo(() => {
@@ -28,7 +46,7 @@ function TokenModel({ unit, exportRef }) {
     // Split words
     const words = useMemo(() => {
         const name = unit?.name || "Unit Name";
-        return name.split(' ');
+        return name.trim().split(/\s+/).filter(w => w.length > 0);
     }, [unit?.name]);
 
     // Constants for layout
@@ -37,26 +55,20 @@ function TokenModel({ unit, exportRef }) {
 
     // Auto-fit logic for the GROUP
     useLayoutEffect(() => {
-        if (textGroupRef.current) {
-            // Box3 setFromObject computes bounding box of children (the words)
-            // Note: Objects inside are rotated [-PI/2, 0, 0].
-            // To retrieve meaningful dimensions for scaling the PARENT group (which scales X and Y),
-            // we should measure them in their local coordinate system relative to the parent?
-
-            // Actually, we are scaling the wrapper mesh which has the rotation.
-            // Inside that mesh, the textGroupRef is aligned with X-Y plane (before the mesh rotates it to X-Z).
-            // So we just need to measure the X and Y extent of the textGroupRef children.
+        if (textGroupRef.current && wrapperRef.current) {
+            // Reset scale to 1 to measure natural size
+            wrapperRef.current.scale.set(1, 1, 1);
+            wrapperRef.current.updateWorldMatrix(true, true);
 
             const box = new THREE.Box3().setFromObject(textGroupRef.current);
             if (!box.isEmpty()) {
-                // Since the text is created on X-Y plane inside the group:
                 const textWidth = box.max.x - box.min.x;
                 const textHeight = box.max.y - box.min.y;
 
                 const marginW = width * 0.15; // 15% margin
                 const marginD = depth * 0.15;
                 const availableWidth = width - marginW;
-                const availableHeight = depth - marginD; // depth corresponds to local Y (height)
+                const availableHeight = depth - marginD;
 
                 const scaleW = availableWidth / textWidth;
                 const scaleH = availableHeight / textHeight;
@@ -66,49 +78,52 @@ function TokenModel({ unit, exportRef }) {
                 // Limit max scale to avoid huge text on large bases with short names
                 if (fitScale > 1.5) fitScale = 1.5;
 
-                setTextScale(fitScale);
+                // Apply manual adjustment
+                const adjustment = unit?.scaleAdjustment || 1.0;
+                fitScale *= adjustment;
+
+                // Apply scale directly to the object, avoiding a React render loop
+                wrapperRef.current.scale.set(fitScale, fitScale, 1);
             }
         }
-    }, [words, width, depth]);
+    }, [words, width, depth, unit?.scaleAdjustment]);
 
     return (
         <group ref={exportRef}>
             {/* The Base */}
             <mesh position={[0, baseHeight / 2, 0]} scale={[1, 1, depth / width]}>
                 <cylinderGeometry args={[radius, radius, baseHeight, 64]} />
-                <meshStandardMaterial color="#333333" />
+                <meshStandardMaterial color={baseColor || "#333333"} />
             </mesh>
 
             {/* The Text Group Wrapper */}
             {/* This mesh handles the orientation (flat on base) and scale */}
-            <mesh position={[0, baseHeight, 0]} rotation={[-Math.PI / 2, 0, 0]} scale={[textScale, textScale, 1]}>
+            {/* We use wrapperRef to imperatively update scale without re-renders */}
+            {/* Sink text slightly into base (0.2mm) to prevent Z-fighting and ensure solid STL export */}
+            <mesh ref={wrapperRef} position={[0, baseHeight - 0.2, 0]} rotation={[-Math.PI / 2, 0, 0]}>
                 <group ref={textGroupRef}>
                     {words.map((word, i) => {
-                        // Calculate vertical offset to center the stack
-                        // Total height = words.length * lineHeight (roughly)
-                        // Or accurately: (words.length - 1) * lineHeight distance between first and last centers.
-                        // We want 0 to be the geometric center.
-
-                        const yOffset = (words.length - 1 - i) * lineHeight - ((words.length - 1) * lineHeight) / 2;
+                        // Calculate vertical offset to center the block of text
+                        // (words.length - 1) * lineheight is the total span from top line center to bottom line center
+                        // We want to center this around 0.
+                        const yOffset = ((words.length - 1) / 2 - i) * lineHeight;
 
                         return (
                             <group key={i} position={[0, yOffset, 0]}>
-                                <Center disableZ>
-                                    <Text3D
-                                        font="/fonts/helvetiker_regular.typeface.json"
-                                        size={fontSize}
-                                        height={1}
-                                        curveSegments={12}
-                                        bevelEnabled
-                                        bevelThickness={0.1}
-                                        bevelSize={0.05}
-                                        bevelOffset={0}
-                                        bevelSegments={5}
-                                    >
-                                        {word}
-                                        <meshStandardMaterial color="#ffd700" />
-                                    </Text3D>
-                                </Center>
+                                <CenteredText3D
+                                    font="/fonts/helvetiker_regular.typeface.json"
+                                    size={fontSize}
+                                    height={1}
+                                    curveSegments={32}
+                                    bevelEnabled
+                                    bevelThickness={0.1}
+                                    bevelSize={0.05}
+                                    bevelOffset={0}
+                                    bevelSegments={5}
+                                    materialColor={textColor || "#ffd700"}
+                                >
+                                    {word}
+                                </CenteredText3D>
                             </group>
                         );
                     })}
@@ -121,6 +136,8 @@ function TokenModel({ unit, exportRef }) {
 export default function TokenPreview({ unit, onUpdate }) {
     const exportRef = useRef();
     const [isCustom, setIsCustom] = useState(false);
+    const [baseColor, setBaseColor] = useState('#e0e0e0');
+    const [textColor, setTextColor] = useState('#000000');
 
     const handleDownload = () => {
         if (!exportRef.current) return;
@@ -141,6 +158,17 @@ export default function TokenPreview({ unit, onUpdate }) {
             setIsCustom(false);
             if (onUpdate && unit) {
                 onUpdate(unit.id, { baseSize: val });
+            }
+        }
+    };
+
+    const handleScaleAdjust = (delta) => {
+        if (onUpdate && unit) {
+            const current = unit.scaleAdjustment || 1.0;
+            // Round to 1 decimal to avoid float weirdness
+            const next = Math.round((current + delta) * 10) / 10;
+            if (next > 0.1) {
+                onUpdate(unit.id, { scaleAdjustment: next });
             }
         }
     };
@@ -203,6 +231,35 @@ export default function TokenPreview({ unit, onUpdate }) {
                     </form>
                 )}
 
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Text Scale</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                        <button className="btn" style={{ padding: '0.2rem 0.6rem' }} onClick={() => handleScaleAdjust(-0.1)}>-</button>
+                        <span style={{ minWidth: '30px', textAlign: 'center' }}>{(unit.scaleAdjustment || 1.0).toFixed(1)}x</span>
+                        <button className="btn" style={{ padding: '0.2rem 0.6rem' }} onClick={() => handleScaleAdjust(0.1)}>+</button>
+                    </div>
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', marginLeft: '1rem' }}>
+                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Colors</label>
+                    <div style={{ display: 'flex', gap: '5px' }}>
+                        <input
+                            type="color"
+                            value={baseColor}
+                            onChange={(e) => setBaseColor(e.target.value)}
+                            title="Base Color"
+                            style={{ width: '30px', height: '30px', padding: 0, border: 'none', cursor: 'pointer', background: 'none' }}
+                        />
+                        <input
+                            type="color"
+                            value={textColor}
+                            onChange={(e) => setTextColor(e.target.value)}
+                            title="Text Color"
+                            style={{ width: '30px', height: '30px', padding: 0, border: 'none', cursor: 'pointer', background: 'none' }}
+                        />
+                    </div>
+                </div>
+
                 <div style={{ flex: 1 }}></div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
@@ -219,7 +276,12 @@ export default function TokenPreview({ unit, onUpdate }) {
                     <pointLight position={[-10, -10, -10]} />
 
                     <Center>
-                        <TokenModel unit={unit} exportRef={exportRef} />
+                        <TokenModel
+                            unit={unit}
+                            exportRef={exportRef}
+                            baseColor={baseColor}
+                            textColor={textColor}
+                        />
                     </Center>
 
                     <OrbitControls makeDefault />
@@ -232,6 +294,6 @@ export default function TokenPreview({ unit, onUpdate }) {
                     </h3>
                 </div>
             </div>
-        </div>
+        </div >
     );
 }
