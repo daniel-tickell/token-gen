@@ -4,6 +4,7 @@ import { OrbitControls, Text3D, Center } from '@react-three/drei';
 import * as THREE from 'three';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import { commonBaseSizes, saveBaseSize } from '../utils/baseSizes';
+import { drawTokenToCanvas } from '../utils/tokenRenderer';
 
 // Helper component to center text geometry robustly and efficiently
 export function CenteredText3D({ children, ...props }) {
@@ -58,7 +59,9 @@ export function TokenModel({ unit, exportRef, baseColor, textColor, tokenHeight,
     // Split words
     const words = useMemo(() => {
         const name = unit?.name || "Unit Name";
-        return name.trim().split(/\s+/).filter(w => w.length > 0);
+        const trimmed = name.trim();
+        if (!trimmed) return [];
+        return trimmed.split(/\s+/).filter(w => w.length > 0);
     }, [unit?.name]);
 
     // Constants for layout
@@ -172,9 +175,11 @@ export default function TokenPreview({
     baseColor, setBaseColor,
     textColor, setTextColor,
     tokenHeight, setTokenHeight,
-    textHeight, setTextHeight
+    textHeight, setTextHeight,
+    tokenType, setTokenType
 }) {
     const exportRef = useRef();
+    const canvasRef = useRef(null);
     const [isCustom, setIsCustom] = useState(false);
 
     // UI state for visual options
@@ -182,39 +187,63 @@ export default function TokenPreview({
     const [hasRing, setHasRing] = useState(false);
 
     const handleDownload = () => {
-        if (!exportRef.current) return;
+        if (!unit) return;
 
-        try {
-            // Clone the group to perform sanitation
-            const sceneClone = exportRef.current.clone(true);
+        if (tokenType === '2D') {
+            // PNG Export
+            if (canvasRef.current) {
+                const link = document.createElement('a');
+                link.download = `${unit.name || 'token'}_${unit.baseSize || 'base'}.png`;
+                link.href = canvasRef.current.toDataURL('image/png');
+                link.click();
+            }
+        } else {
+            // STL Export
+            if (!exportRef.current) return;
 
-            // Validate meshes
-            const badMeshes = [];
-            sceneClone.traverse((child) => {
-                if (child.isMesh) {
-                    if (!child.geometry || !child.geometry.attributes || !child.geometry.attributes.position) {
-                        console.warn("Invalid geometry found on", child);
-                        badMeshes.push(child);
+            try {
+                // Clone the group to perform sanitation
+                const sceneClone = exportRef.current.clone(true);
+
+                // Validate meshes
+                const badMeshes = [];
+                sceneClone.traverse((child) => {
+                    if (child.isMesh) {
+                        if (!child.geometry || !child.geometry.attributes || !child.geometry.attributes.position) {
+                            console.warn("Invalid geometry found on", child);
+                            badMeshes.push(child);
+                        }
                     }
-                }
-            });
+                });
 
-            badMeshes.forEach(child => {
-                if (child.parent) child.parent.remove(child);
-            });
+                badMeshes.forEach(child => {
+                    if (child.parent) child.parent.remove(child);
+                });
 
-            const exporter = new STLExporter();
-            const result = exporter.parse(sceneClone, { binary: true });
-            const blob = new Blob([result], { type: 'application/octet-stream' });
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = `${unit?.name || 'token'}_${unit?.baseSize || 'base'}.stl`;
-            link.click();
-        } catch (err) {
-            console.error("Export failed", err);
-            alert("Failed to generate STL: " + err.message);
+                const exporter = new STLExporter();
+                const result = exporter.parse(sceneClone, { binary: true });
+                const blob = new Blob([result], { type: 'application/octet-stream' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `${unit.name || 'token'}_${unit.baseSize || 'base'}.stl`;
+                link.click();
+            } catch (err) {
+                console.error("Export failed", err);
+                alert("Failed to generate STL: " + err.message);
+            }
         }
     };
+
+    // Effect for 2D drawing
+    useLayoutEffect(() => {
+        if (tokenType === '2D' && canvasRef.current && unit) {
+            drawTokenToCanvas(canvasRef.current, unit, {
+                baseColor,
+                textColor,
+                hasRing
+            });
+        }
+    }, [tokenType, unit, baseColor, textColor, hasRing]);
 
     const handleSizeChange = (e) => {
         const val = e.target.value;
@@ -423,34 +452,77 @@ export default function TokenPreview({
 
                 <div style={{ flex: 1 }}></div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end' }}>
-                    <label style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', opacity: 0 }}>.</label>
-                    <button className="btn" onClick={handleDownload}>STL</button>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.2rem' }}>
+                    <div style={{ display: 'flex', border: '1px solid var(--border-color)', borderRadius: '4px', overflow: 'hidden' }}>
+                        <button
+                            onClick={() => setTokenType && setTokenType('3D')}
+                            style={{
+                                padding: '0.2rem 0.5rem',
+                                background: tokenType === '3D' ? 'var(--accent-color)' : 'transparent',
+                                color: tokenType === '3D' ? 'black' : 'var(--text-secondary)',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: '0.8rem'
+                            }}
+                        >
+                            3D
+                        </button>
+                        <button
+                            onClick={() => setTokenType && setTokenType('2D')}
+                            style={{
+                                padding: '0.2rem 0.5rem',
+                                background: tokenType === '2D' ? 'var(--accent-color)' : 'transparent',
+                                color: tokenType === '2D' ? 'black' : 'var(--text-secondary)',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: '0.8rem'
+                            }}
+                        >
+                            2D
+                        </button>
+                    </div>
+                    <button className="btn" onClick={handleDownload}>
+                        {tokenType === '2D' ? 'PNG' : 'STL'}
+                    </button>
                 </div>
             </div>
 
             {/* Preview Canvas */}
-            <div className="panel" style={{ position: 'relative', height: '500px', padding: 0, overflow: 'hidden' }}>
-                <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 50, 50], fov: 50 }}>
-                    <ambientLight intensity={0.5} />
-                    <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} />
-                    <pointLight position={[-10, -10, -10]} />
+            <div className="panel" style={{ position: 'relative', height: '500px', padding: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#222' }}>
+                {tokenType === '3D' ? (
+                    <Canvas shadows dpr={[1, 2]} camera={{ position: [0, 50, 50], fov: 50 }}>
+                        <ambientLight intensity={0.5} />
+                        <spotLight position={[10, 10, 10]} angle={0.15} penumbra={1} />
+                        <pointLight position={[-10, -10, -10]} />
 
-                    <Center>
-                        <TokenModel
-                            unit={unit}
-                            exportRef={exportRef}
-                            baseColor={baseColor}
-                            textColor={textColor}
-                            tokenHeight={tokenHeight}
-                            textHeight={textHeight}
-                            hasBevel={hasBevel}
-                            hasRing={hasRing}
+                        <Center>
+                            <TokenModel
+                                unit={unit}
+                                exportRef={exportRef}
+                                baseColor={baseColor}
+                                textColor={textColor}
+                                tokenHeight={tokenHeight}
+                                textHeight={textHeight}
+                                hasBevel={hasBevel}
+                                hasRing={hasRing}
+                            />
+                        </Center>
+
+                        <OrbitControls makeDefault />
+                    </Canvas>
+                ) : (
+                    <div style={{ overflow: 'auto', maxWidth: '100%', maxHeight: '100%', padding: '2rem' }}>
+                        <canvas
+                            ref={canvasRef}
+                            style={{
+                                maxWidth: '100%',
+                                maxHeight: '100%',
+                                boxShadow: '0 0 20px rgba(0,0,0,0.5)',
+                            }}
                         />
-                    </Center>
+                    </div>
+                )}
 
-                    <OrbitControls makeDefault />
-                </Canvas>
 
                 <div style={{ position: 'absolute', top: '20px', left: '20px', pointerEvents: 'none' }}>
                     <h3 style={{ margin: 0, textShadow: '0 2px 4px rgba(0,0,0,0.8)' }}>

@@ -16,6 +16,7 @@ function App() {
   const [textColor, setTextColor] = useState('#000000');
   const [tokenHeight, setTokenHeight] = useState(3);
   const [textHeight, setTextHeight] = useState(1);
+  const [tokenType, setTokenType] = useState('3D'); // '3D' or '2D'
 
   const handleParse = (text) => {
     const parsed = parseList(text);
@@ -53,6 +54,7 @@ function App() {
                 textColor={textColor}
                 tokenHeight={tokenHeight}
                 textHeight={textHeight}
+                tokenType={tokenType}
               />
             }
           />
@@ -69,6 +71,8 @@ function App() {
             setTokenHeight={setTokenHeight}
             textHeight={textHeight}
             setTextHeight={setTextHeight}
+            tokenType={tokenType}
+            setTokenType={setTokenType}
           />
         </div>
       </div>
