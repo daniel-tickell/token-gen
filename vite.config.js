@@ -8,5 +8,6 @@ export default defineConfig({
     host: true, // Listen on all local IPs
     port: 5555,
     strictPort: true,
+    allowedHosts: ['cm5.local'],
   }
 })
